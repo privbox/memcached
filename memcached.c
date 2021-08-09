@@ -46,6 +46,8 @@
 #include <sysexits.h>
 #include <stddef.h>
 
+#include <sys/kerncall.h>
+
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
 #endif
@@ -290,6 +292,7 @@ static void settings_init(void) {
 #endif
     settings.num_napi_ids = 0;
     settings.memory_file = NULL;
+    settings.kerncall = false;
 }
 
 extern pthread_mutex_t conn_lock;
@@ -1879,6 +1882,7 @@ void process_stat_settings(ADD_STAT add_stats, void *c) {
 #endif
     APPEND_STAT("num_napi_ids", "%s", settings.num_napi_ids);
     APPEND_STAT("memory_file", "%s", settings.memory_file);
+    APPEND_STAT("kerncall", "%s", settings.kerncall ? "yes" : "no");
 }
 
 static int nz_strcmp(int nzlength, const char *nz, const char *z) {
@@ -3274,6 +3278,9 @@ static void drive_machine(conn *c) {
 
 void event_handler(const evutil_socket_t fd, const short which, void *arg) {
     conn *c;
+    // unsigned int cs;
+    // __asm__ __volatile__ ("mov %%cs, %0" : "=r"(cs) : : );
+    // printf("in event handler with CS=%x\n", cs);
 
     c = (conn *)arg;
     assert(c != NULL);
@@ -3832,6 +3839,7 @@ static void usage(void) {
     printf("-e, --memory-file=<file>  (EXPERIMENTAL) mmap a file for item memory.\n"
            "                          use only in ram disks or persistent memory mounts!\n"
            "                          enables restartable cache (stop with SIGUSR1)\n");
+    printf("-K, --kerncall            use kerncall\n");
 #ifdef TLS
     printf("-Z, --enable-ssl          enable TLS/SSL\n");
 #endif
@@ -4274,6 +4282,22 @@ static int _mc_meta_save_cb(const char *tag, void *ctx, void *data) {
 // backend)
 #define RESTART_REQUIRED_META 17
 
+struct timeval loop_timeout = {
+    .tv_sec = 0,
+    .tv_usec = 1000,
+};
+
+static long __event_base_loop_once(unsigned long param) {
+    void *main_base = (void *) param;
+    int res = 0;
+
+    for (int i = 0; i < 10000 && !stop_main_loop && res != -1; i++) {
+        event_base_loopexit(main_base, &loop_timeout);
+        res = event_base_loop(main_base, EVLOOP_ONCE);
+    }
+    return res;
+}
+
 // With this callback we make a decision on if the current configuration
 // matches up enough to allow reusing the cache.
 // We also re-load important runtime information.
@@ -4694,6 +4718,7 @@ int main (int argc, char **argv) {
           "e:"  /* mmap path for external item memory */
           "o:"  /* Extended generic options */
           "N:"  /* NAPI ID based thread selection */
+          "K"   /* Kerncall */
           ;
 
     /* process arguments */
@@ -4735,6 +4760,7 @@ int main (int argc, char **argv) {
         {"memory-file", required_argument, 0, 'e'},
         {"extended", required_argument, 0, 'o'},
         {"napi-ids", required_argument, 0, 'N'},
+        {"kerncall", no_argument, 0, 'K'},
         {0, 0, 0, 0}
     };
     int optindex;
@@ -4962,6 +4988,9 @@ int main (int argc, char **argv) {
                 fprintf(stderr, "Maximum number of NAPI IDs must be greater than 0\n");
                 return 1;
             }
+            break;
+        case 'K':
+            settings.kerncall = true;
             break;
         case 'o': /* It's sub-opts time! */
             subopts_orig = subopts = strdup(optarg); /* getsubopt() changes the original args */
@@ -5707,6 +5736,12 @@ int main (int argc, char **argv) {
         prefill = true;
     }
 #endif
+    if (settings.kerncall) {
+        if (kerncall_setup()) {
+            fprintf(stderr, "Kerncall setup failed.\n");
+            exit(EXIT_FAILURE);
+        }
+    }
 
     if (settings.drop_privileges) {
         setup_privilege_violations_handler();
@@ -5882,12 +5917,26 @@ int main (int argc, char **argv) {
 
     /* Initialize the uriencode lookup table. */
     uriencode_init();
+    
+    if (settings.kerncall) {
+        /* enter the event loop */
+        while (!stop_main_loop) {
+            // printf("%d before kerncall spawn main\n", getpid());
+            int res = kerncall_spawn((uint64_t) __event_base_loop_once, (uint64_t) main_base);
+            // printf("%d after kerncall spawn main\n", getpid());
 
-    /* enter the event loop */
-    while (!stop_main_loop) {
-        if (event_base_loop(main_base, EVLOOP_ONCE) != 0) {
-            retval = EXIT_FAILURE;
-            break;
+            if (res != 0) {
+                retval = EXIT_FAILURE;
+                break;
+            }
+        }
+    } else {
+        /* enter the event loop */
+        while (!stop_main_loop) {
+            if (event_base_loop(main_base, EVLOOP_ONCE) != 0) {
+                retval = EXIT_FAILURE;
+                break;
+            }
         }
     }
 

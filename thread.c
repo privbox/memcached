@@ -13,6 +13,8 @@
 #include <string.h>
 #include <pthread.h>
 
+#include <sys/kerncall.h>
+
 #ifdef __sun
 #include <atomic.h>
 #endif
@@ -396,6 +398,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
 #else
     me->base = event_init();
 #endif
+    me->stopped = false;
 
     if (! me->base) {
         fprintf(stderr, "Can't allocate event base\n");
@@ -457,6 +460,22 @@ static void setup_thread(LIBEVENT_THREAD *me) {
 #endif
 }
 
+static struct timeval thread_timeout = {
+    .tv_sec = 0,
+    .tv_usec = 1000,
+};
+
+static int __event_base_loop(unsigned long param) {
+    LIBEVENT_THREAD *me = (LIBEVENT_THREAD *) param;
+    int res = 0;
+
+    for (int i = 0; i < 10000 && !me->stopped && res != -1; i++) {
+        event_base_loopexit(me->base, &thread_timeout);
+        res = event_base_loop(me->base, EVLOOP_ONCE);
+    }
+    return res;
+}
+
 /*
  * Worker thread: main event loop
  */
@@ -478,7 +497,16 @@ static void *worker_libevent(void *arg) {
 
     register_thread_initialized();
 
-    event_base_loop(me->base, 0);
+    if (settings.kerncall) {
+        int res = 0;
+        while (!me->stopped && !res) {
+            // printf("%d before kerncall spawn thread\n", getpid());
+            res = kerncall_spawn((uint64_t) __event_base_loop, (uint64_t) me);
+            // printf("%d after kerncall spawn thread\n", getpid());
+        }
+    } else {
+        event_base_loop(me->base, 0);
+    }
 
     // same mechanism used to watch for all threads exiting.
     register_thread_initialized();
@@ -580,6 +608,7 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
     /* asked to stop */
     case 's':
         event_base_loopexit(me->base, NULL);
+        me->stopped = true;
         break;
     }
 }

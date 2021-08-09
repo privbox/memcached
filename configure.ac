@@ -788,12 +788,12 @@ dnl to detect the function ;-)
 if test "$ICC" = "yes"
 then
    dnl ICC trying to be gcc.
-   CFLAGS="$CFLAGS -diag-disable 187 -Wall -Werror"
+   CFLAGS="$CFLAGS -diag-disable 187 -Wall"
    AC_DEFINE([_GNU_SOURCE],[1],[make sure IOV_MAX is defined])
 elif test "$GCC" = "yes"
 then
   GCC_VERSION=`$CC -dumpversion`
-  CFLAGS="$CFLAGS -Wall -Werror -pedantic -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls"
+  CFLAGS="$CFLAGS -Wall -pedantic -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls"
   if test "x$enable_asan" = "xyes"; then
     CFLAGS="$CFLAGS -fsanitize=address"
   fi

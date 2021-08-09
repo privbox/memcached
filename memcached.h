@@ -490,6 +490,7 @@ struct settings {
 #endif
     int num_napi_ids;   /* maximum number of NAPI IDs */
     char *memory_file;  /* warm restart memory file path */
+    bool kerncall;
 };
 
 extern struct stats stats;
@@ -631,7 +632,7 @@ typedef struct {
     char   *ssl_wbuf;
 #endif
     int napi_id;                /* napi id associated with this thread */
-
+    bool stopped;
 } LIBEVENT_THREAD;
 
 /**
